@@ -1,0 +1,31 @@
+name: Host info
+description: Record the host before the workload touches it; bench-finish uploads it.
+inputs:
+  label:
+    description: runs-on label of this job (the matrix key)
+    required: true
+  vcpu:
+    description: vCPU count the label advertises
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        LABEL: ${{ inputs.label }}
+        ADVERTISED_VCPU: ${{ inputs.vcpu }}
+      # printf, not jq: the host is whatever image the label boots, and jq is not guaranteed there.
+      run: |
+        dir="$RUNNER_TEMP/bench"
+        mkdir -p "$dir"
+        cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1 | tr -d '"\\')
+        mem=$(awk '/MemTotal/ {printf "%.1f", $2 / 1048576}' /proc/meminfo)
+        read -r fstype size avail < <(df -BG --output=fstype,size,avail "$GITHUB_WORKSPACE" | tail -1 | tr -d G)
+        os=$(. /etc/os-release && echo "$PRETTY_NAME")
+        printf '{"label":"%s","advertisedVcpu":%s,"vcpu":%s,"cpu":"%s","memoryGiB":%s,"workspace":{"fstype":"%s","sizeGiB":%s,"freeGiB":%s},"kernel":"%s","os":"%s","image":"%s"}\n' \
+          "$LABEL" "$ADVERTISED_VCPU" "$(nproc)" "$cpu" "$mem" "$fstype" "$size" "$avail" \
+          "$(uname -r)" "$os" "${ImageOS:-}${ImageVersion:+ $ImageVersion}" > "$dir/host.json"
+        cat "$dir/host.json"
+        if [ "$(nproc)" != "$ADVERTISED_VCPU" ]; then
+          echo "::warning::$LABEL advertises $ADVERTISED_VCPU vCPU but the job got $(nproc)"
+        fi
