@@ -7,9 +7,9 @@ runs:
       with:
         pattern: bench-*
         path: ${{ runner.temp }}/bench
-    # One bench-<label> artifact per job: host.json (host-info) and phases.tsv (bin/mark lines, then
-    # bench-finish's `end <µs> <job status>`). A phase runs to the next boundary; when the job did not
-    # succeed, the last phase it started is the one that failed.
+    # One bench-<label>-<replica> artifact per job: host.json (host-info) and phases.tsv (bin/mark
+    # lines, then bench-finish's `end <µs> <job status>`). A phase runs to the next boundary. The
+    # table has one row per runner label, with p50 / p90 over that label's successful replicas.
     - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -18,27 +18,40 @@ runs:
           const read = (job, file) => fs.readFileSync(`${dir}/${job}/${file}`, "utf8");
           const jobs = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((job) => {
             const rows = read(job, "phases.tsv").trim().split("\n").map((line) => line.split("\t"));
-            const status = rows.at(-1)[2];
-            const phases = rows.slice(0, -1).flatMap(([name, start], i) =>
-              name === "-" ? [] : [{ name, seconds: (rows[i + 1][1] - start) / 1e6, ok: i < rows.length - 2 || status === "success" }],
-            );
+            const phases = rows.slice(0, -1).flatMap(([name, start], i) => (name === "-" ? [] : [{ name, seconds: (rows[i + 1][1] - start) / 1e6 }]));
             const totalSeconds = phases.reduce((sum, phase) => sum + phase.seconds, 0);
-            return { ...JSON.parse(read(job, "host.json")), status, phases, totalSeconds };
+            return { ...JSON.parse(read(job, "host.json")), status: rows.at(-1)[2], phases, totalSeconds };
           });
-          // Smallest tier first; within a tier, successful runs fastest first, then failures.
-          jobs.sort((a, b) => a.advertisedVcpu - b.advertisedVcpu || (a.status !== "success") - (b.status !== "success") || a.totalSeconds - b.totalSeconds);
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/results.json`, JSON.stringify(jobs, null, 2));
 
+          // Linear-interpolation percentile (numpy's default).
+          const percentile = (values, p) => {
+            const sorted = values.toSorted((a, b) => a - b);
+            const i = (sorted.length - 1) * p;
+            return sorted[Math.floor(i)] + (sorted[Math.ceil(i)] - sorted[Math.floor(i)]) * (i % 1);
+          };
+          const stat = (values) => (values.length ? `${percentile(values, 0.5).toFixed(1)} / ${percentile(values, 0.9).toFixed(1)}` : "—");
           const names = [...new Set(jobs.flatMap((job) => job.phases.map((phase) => phase.name)))];
-          const secs = (seconds) => `${seconds.toFixed(1)}s`;
+          // One row per label. Smallest tier first; within a tier, fastest p50 total first, then labels
+          // with no successful replica.
+          const cells = Object.values(Object.groupBy(jobs, (job) => job.label)).map((runs) => {
+            const ok = runs.filter((job) => job.status === "success");
+            return { ...runs[0], runs, ok, p50: ok.length ? percentile(ok.map((job) => job.totalSeconds), 0.5) : Infinity };
+          });
+          cells.sort((a, b) => a.advertisedVcpu - b.advertisedVcpu || a.p50 - b.p50);
           await core.summary
             .addHeading(context.workflow)
+            .addRaw("p50 / p90 seconds over each runner's successful replicas.", true)
             .addTable([
-              ["vCPU", "runner", "RAM GiB", ...names, "total"].map((data) => ({ data, header: true })),
-              ...jobs.map((job) => {
-                const cell = (phase) => (!phase ? "—" : phase.ok ? secs(phase.seconds) : `✗ ${job.status}`);
-                return [`${job.vcpu}`, job.label, `${job.memoryGiB}`, ...names.map((name) => cell(job.phases.find((phase) => phase.name === name))), secs(job.totalSeconds)];
-              }),
+              ["vCPU", "runner", "RAM GiB", "ok", ...names, "total"].map((data) => ({ data, header: true })),
+              ...cells.map((cell) => [
+                `${cell.vcpu}`,
+                cell.label,
+                `${cell.memoryGiB}`,
+                `${cell.ok.length}/${cell.runs.length}`,
+                ...names.map((name) => stat(cell.ok.flatMap((job) => job.phases.filter((phase) => phase.name === name).map((phase) => phase.seconds)))),
+                stat(cell.ok.map((job) => job.totalSeconds)),
+              ]),
             ])
             .write();
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

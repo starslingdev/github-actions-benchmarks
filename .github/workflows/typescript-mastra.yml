@@ -8,6 +8,11 @@ name: TypeScript build (mastra)
 
 on:
   workflow_dispatch:
+    inputs:
+      replicas:
+        description: Jobs per runner (1-40)
+        type: number
+        default: 5
 
 permissions:
   contents: read
@@ -17,13 +22,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: starsling-ubuntu-26.04-2
+    outputs:
+      replicas: ${{ steps.replicas.outputs.list }}
+    steps:
+      # Expressions have no range(): turn the count into the [1..N] list the matrix fans out over.
+      # 40 keeps 6 runners x N under GitHub's 256-job matrix limit.
+      - id: replicas
+        env:
+          REPLICAS: ${{ inputs.replicas }}
+        run: |
+          if ! [[ "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 40 )); then
+            echo "::error::replicas must be 1-40, got '$REPLICAS'"
+            exit 1
+          fi
+          echo "list=[$(seq 1 "$REPLICAS" | paste -sd, -)]" >> "$GITHUB_OUTPUT"
+
   bench:
-    name: ${{ matrix.vcpu }} vCPU · ${{ matrix.label }}
+    needs: plan
+    name: ${{ matrix.vcpu }} vCPU · ${{ matrix.label }} · ${{ matrix.replica }}
     strategy:
       fail-fast: false
       matrix:
         vcpu: [2, 4, 8]
         provider: [starsling, github]
+        replica: ${{ fromJSON(needs.plan.outputs.replicas) }}
         include:
           - { vcpu: 2, provider: starsling, label: starsling-ubuntu-26.04-2 }
           - { vcpu: 2, provider: github, label: ubuntu-26.04-2 }
@@ -113,7 +137,7 @@ jobs:
         if: always()
         uses: ./.harness/.github/actions/bench-finish
         with:
-          label: ${{ matrix.label }}
+          key: ${{ matrix.label }}-${{ matrix.replica }}
 
   summary:
     needs: bench

@@ -1,8 +1,8 @@
 name: Bench finish
 description: Close the last phase and upload host info and phase timings for the summary job.
 inputs:
-  label:
-    description: runs-on label of this job (the matrix key)
+  key:
+    description: Unique key of this job (runs-on label and replica)
     required: true
 runs:
   using: composite
@@ -16,6 +16,8 @@ runs:
         cat "$RUNNER_TEMP/bench/phases.tsv"
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: bench-${{ inputs.label }}
+        name: bench-${{ inputs.key }}
         path: ${{ runner.temp }}/bench/
         retention-days: 90
+        # A re-run of a failed job replaces its earlier attempt's timings.
+        overwrite: true
