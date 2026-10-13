@@ -1,10 +1,8 @@
 name: TypeScript build (mastra)
 
-# mastra-ai/mastra's CI phases, one step per phase, on StarSling and GitHub-hosted runners. Mirrors
-# the realworld-mastra profile in hpc-sandbox-benchmarks (same pin, same commands, same cold-store
-# rules), split into one Actions step per phase.
-# Steps named "phase: <name>" are the measured ones, each opened by a `bin/mark` step (GitHub's
-# API does not expose step timings); everything else is setup and never timed.
+# mastra-ai/mastra's checkout, cold install, lint and build on every runner in bench.yml's matrix.
+# The phases live in .github/actions/typescript-mastra; the shared pipeline is
+# .github/workflows/bench.yml.
 
 on:
   workflow_dispatch:
@@ -22,131 +20,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    runs-on: starsling-ubuntu-26.04-2
-    outputs:
-      replicas: ${{ steps.replicas.outputs.list }}
-    steps:
-      # Expressions have no range(): turn the count into the [1..N] list the matrix fans out over.
-      # 40 keeps 6 runners x N under GitHub's 256-job matrix limit.
-      - id: replicas
-        env:
-          REPLICAS: ${{ inputs.replicas }}
-        run: |
-          if ! [[ "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 40 )); then
-            echo "::error::replicas must be 1-40, got '$REPLICAS'"
-            exit 1
-          fi
-          echo "list=[$(seq 1 "$REPLICAS" | paste -sd, -)]" >> "$GITHUB_OUTPUT"
-
   bench:
-    needs: plan
-    name: ${{ matrix.vcpu }} vCPU · ${{ matrix.label }} · ${{ matrix.replica }}
-    strategy:
-      fail-fast: false
-      matrix:
-        vcpu: [2, 4, 8]
-        provider: [starsling, github]
-        replica: ${{ fromJSON(needs.plan.outputs.replicas) }}
-        include:
-          - { vcpu: 2, provider: starsling, label: starsling-ubuntu-26.04-2 }
-          - { vcpu: 2, provider: github, label: ubuntu-26.04-2 }
-          - { vcpu: 4, provider: starsling, label: starsling-ubuntu-26.04 }
-          # GitHub's standard runner, 4 vCPU in public repositories (2 and 8 are the org's larger
-          # runners).
-          - { vcpu: 4, provider: github, label: ubuntu-26.04 }
-          - { vcpu: 8, provider: starsling, label: starsling-ubuntu-26.04-8 }
-          - { vcpu: 8, provider: github, label: ubuntu-26.04-8 }
-    runs-on: ${{ matrix.label }}
-    timeout-minutes: 45
-    env:
-      MASTRA_REPOSITORY: mastra-ai/mastra
-      MASTRA_COMMIT: b6eeb9d08ebeaf27bc6fd16b6b88087040aaf767
-      NODE_VERSION: "22"
-      CI: "true"
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
-      DO_NOT_TRACK: "1"
-      TURBO_TELEMETRY_DISABLED: "1"
-      # A fresh checkout has no turbo cache, but never let a cache hit stand in for a build.
-      TURBO_FORCE: "true"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: .harness
-          persist-credentials: false
-      - name: Host info
-        uses: ./.harness/.github/actions/host-info
-        with:
-          label: ${{ matrix.label }}
-          vcpu: ${{ matrix.vcpu }}
-      - name: Isolate caches
-        # pnpm's store is what makes an install cold or warm. pnpm 11 resolves it from PNPM_HOME
-        # first, then <XDG_DATA_HOME>/pnpm/store; images that set PNPM_HOME or carry a store in
-        # $HOME would otherwise turn the cold install into a warm one. Pin every knob into an empty
-        # directory under RUNNER_TEMP.
-        run: |
-          root="$RUNNER_TEMP/cold"
-          mkdir -p "$root/pnpm-home" "$root/xdg-data" "$root/xdg-cache" "$root/corepack"
-          {
-            echo "PNPM_HOME=$root/pnpm-home"
-            echo "XDG_DATA_HOME=$root/xdg-data"
-            echo "XDG_CACHE_HOME=$root/xdg-cache"
-            echo "COREPACK_HOME=$root/corepack"
-          } >> "$GITHUB_ENV"
-      - run: .harness/bin/mark "checkout"
-      - name: "phase: checkout"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ env.MASTRA_REPOSITORY }}
-          ref: ${{ env.MASTRA_COMMIT }}
-          path: work
-          persist-credentials: false
-      - run: .harness/bin/mark -
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Setup pnpm
-        working-directory: work
-        # corepack fetches the pnpm that mastra's packageManager field pins (sha512-verified) here,
-        # so the download never lands inside the cold install.
-        run: |
-          corepack enable
-          corepack install
-          pnpm --version
-          # Refuse to time a warm install: the store must not exist yet.
-          store="$(pnpm store path)"
-          if [ -e "$store" ]; then
-            echo "::error::pnpm store already exists at $store; the install would not be cold"
-            exit 1
-          fi
-      - run: .harness/bin/mark "cold install"
-      - name: "phase: cold install"
-        working-directory: work
-        run: pnpm install --frozen-lockfile
-      - run: .harness/bin/mark "lint"
-      - name: "phase: lint"
-        working-directory: work
-        run: pnpm lint:format
-      - run: .harness/bin/mark "build"
-      - name: "phase: build"
-        working-directory: work
-        # Scoped to packages/core (and its workspace deps), as in the realworld-mastra profile.
-        run: pnpm build:core
-      - name: Bench finish
-        if: always()
-        uses: ./.harness/.github/actions/bench-finish
-        with:
-          key: ${{ matrix.label }}-${{ matrix.replica }}
-
-  summary:
-    needs: bench
-    if: always()
-    runs-on: starsling-ubuntu-26.04-2
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/summarize
+    uses: ./.github/workflows/bench.yml
+    with:
+      suite: typescript-mastra
+      # workflow_dispatch hands number inputs over as strings; bench.yml takes a number.
+      replicas: ${{ fromJSON(inputs.replicas) }}

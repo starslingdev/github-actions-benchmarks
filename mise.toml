@@ -1,4 +1,4 @@
-# Non-Bun developer tools, version-pinned (aqua backend: checksum-verified official releases, no
+# Developer tools, version-pinned (aqua backend: checksum-verified official releases, no
 # postinstall). `mise trust` once after cloning, then e.g. `mise exec -- actionlint`.
 
 [tools]
