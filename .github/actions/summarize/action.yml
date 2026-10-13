@@ -1,0 +1,48 @@
+name: Summarize
+description: Tabulate every bench job's phase timings into the run summary and a results artifact.
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: bench-*
+        path: ${{ runner.temp }}/bench
+    # One bench-<label> artifact per job: host.json (host-info) and phases.tsv (bin/mark lines, then
+    # bench-finish's `end <µs> <job status>`). A phase runs to the next boundary; when the job did not
+    # succeed, the last phase it started is the one that failed.
+    - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        script: |
+          const fs = require("node:fs");
+          const dir = `${process.env.RUNNER_TEMP}/bench`;
+          const read = (job, file) => fs.readFileSync(`${dir}/${job}/${file}`, "utf8");
+          const jobs = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((job) => {
+            const rows = read(job, "phases.tsv").trim().split("\n").map((line) => line.split("\t"));
+            const status = rows.at(-1)[2];
+            const phases = rows.slice(0, -1).flatMap(([name, start], i) =>
+              name === "-" ? [] : [{ name, seconds: (rows[i + 1][1] - start) / 1e6, ok: i < rows.length - 2 || status === "success" }],
+            );
+            const totalSeconds = phases.reduce((sum, phase) => sum + phase.seconds, 0);
+            return { ...JSON.parse(read(job, "host.json")), status, phases, totalSeconds };
+          });
+          // Smallest tier first; within a tier, successful runs fastest first, then failures.
+          jobs.sort((a, b) => a.advertisedVcpu - b.advertisedVcpu || (a.status !== "success") - (b.status !== "success") || a.totalSeconds - b.totalSeconds);
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/results.json`, JSON.stringify(jobs, null, 2));
+
+          const names = [...new Set(jobs.flatMap((job) => job.phases.map((phase) => phase.name)))];
+          const secs = (seconds) => `${seconds.toFixed(1)}s`;
+          await core.summary
+            .addHeading(context.workflow)
+            .addTable([
+              ["vCPU", "runner", "RAM GiB", ...names, "total"].map((data) => ({ data, header: true })),
+              ...jobs.map((job) => {
+                const cell = (phase) => (!phase ? "—" : phase.ok ? secs(phase.seconds) : `✗ ${job.status}`);
+                return [`${job.vcpu}`, job.label, `${job.memoryGiB}`, ...names.map((name) => cell(job.phases.find((phase) => phase.name === name))), secs(job.totalSeconds)];
+              }),
+            ])
+            .write();
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: results
+        path: ${{ runner.temp }}/results.json
+        retention-days: 90
