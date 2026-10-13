@@ -30,7 +30,8 @@ follow the rust suite of
 
 ## Runners
 
-Each workflow runs one job per cell:
+Each workflow runs a matrix of vCPU tier × provider × replica, with `replicas` jobs (default 5) per
+cell:
 
 | vCPU | StarSling | GitHub |
 |---|---|---|
@@ -44,7 +45,8 @@ build starts and warns if the vCPU count differs.
 ## Results
 
 Each run ends with a summary job that posts a table to the run's summary page: one row per runner,
-one column per phase, sorted by tier and then by total time, with failed jobs last. The same data is
+with the p50 / p90 of every phase and of the total over that runner's successful replicas, and how
+many replicas succeeded. Rows are sorted by tier, then by p50 total. Every job's raw timings are
 attached to the run as a `results.json` artifact. See the [Actions tab](../../actions) for runs.
 
 ## Methodology
@@ -58,17 +60,20 @@ attached to the run as a `results.json` artifact. See the [Actions tab](../../ac
   [`bin/mark`](bin/mark), which records a microsecond timestamp. Setup outside the phases (checking
   out this repository, recording host info, installing Node and pnpm for mastra) is not counted.
 - **Independent jobs.** `fail-fast` is off, so one runner failing never cancels the others.
-- **Limits.** Each dispatch is one sample per runner, and network-bound phases (checkout, installs,
-  crate downloads) vary from run to run. Compare several runs before drawing conclusions from small
-  differences.
+- **Replicas.** Every cell runs `replicas` independent jobs, each on a fresh runner, all dispatched
+  together so every runner sees the same time of day. Percentiles use linear interpolation over the
+  successful replicas only.
+- **Limits.** Network-bound phases (checkout, installs, crate downloads) vary from run to run, and a
+  few replicas per cell can't separate small differences. Raise `replicas` before drawing
+  conclusions from them.
 
 ## Running
 
-Both workflows run on demand:
+Both workflows run on demand, with `replicas` (1–40, default 5) jobs per runner:
 
 ```sh
 gh workflow run typescript-mastra.yml
-gh workflow run rust-spotify-player.yml
+gh workflow run rust-spotify-player.yml -f replicas=10
 ```
 
 ## Development
