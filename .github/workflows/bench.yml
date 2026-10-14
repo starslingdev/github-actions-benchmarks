@@ -1,0 +1,103 @@
+name: Bench
+
+# The pipeline every benchmark shares: plan the replicas, run the suite once per runner and replica,
+# then summarize. Each entry workflow (typescript-mastra.yml, rust-spotify-player.yml) calls this
+# with its suite name; the suite's phases live in the composite action .github/actions/<suite>.
+
+on:
+  workflow_call:
+    inputs:
+      suite:
+        description: Suite to run (a composite action under .github/actions/)
+        type: string
+        required: true
+      replicas:
+        description: Jobs per runner (1-40)
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: starsling-ubuntu-26.04-2
+    outputs:
+      replicas: ${{ steps.replicas.outputs.list }}
+    steps:
+      # Expressions have no range(): turn the count into the [1..N] list the matrix fans out over.
+      # 40 keeps 6 runners x N under GitHub's 256-job matrix limit.
+      - id: replicas
+        env:
+          SUITE: ${{ inputs.suite }}
+          REPLICAS: ${{ inputs.replicas }}
+        run: |
+          # Keep in sync with the suite steps of the bench job.
+          case "$SUITE" in
+            typescript-mastra | rust-spotify-player) ;;
+            *) echo "::error::unknown suite '$SUITE'"; exit 1 ;;
+          esac
+          if ! [[ "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 40 )); then
+            echo "::error::replicas must be 1-40, got '$REPLICAS'"
+            exit 1
+          fi
+          echo "list=[$(seq 1 "$REPLICAS" | paste -sd, -)]" >> "$GITHUB_OUTPUT"
+
+  bench:
+    needs: plan
+    name: ${{ matrix.vcpu }} vCPU · ${{ matrix.label }} · ${{ matrix.replica }}
+    strategy:
+      fail-fast: false
+      matrix:
+        vcpu: [2, 4, 8]
+        provider: [starsling, github]
+        replica: ${{ fromJSON(needs.plan.outputs.replicas) }}
+        include:
+          - { vcpu: 2, provider: starsling, label: starsling-ubuntu-26.04-2 }
+          - { vcpu: 2, provider: github, label: ubuntu-26.04-2 }
+          - { vcpu: 4, provider: starsling, label: starsling-ubuntu-26.04 }
+          # GitHub's standard runner, 4 vCPU in public repositories (2 and 8 are the org's larger
+          # runners).
+          - { vcpu: 4, provider: github, label: ubuntu-26.04 }
+          - { vcpu: 8, provider: starsling, label: starsling-ubuntu-26.04-8 }
+          - { vcpu: 8, provider: github, label: ubuntu-26.04-8 }
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 45
+    steps:
+      - id: harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .harness
+          persist-credentials: false
+      # Puts bin/mark on PATH for the suite's phase boundaries.
+      - run: echo "$GITHUB_WORKSPACE/.harness/bin" >> "$GITHUB_PATH"
+      - name: Host info
+        uses: ./.harness/.github/actions/host-info
+        with:
+          label: ${{ matrix.label }}
+          vcpu: ${{ matrix.vcpu }}
+      # `uses:` can't take an expression, so each suite is its own step.
+      - if: inputs.suite == 'typescript-mastra'
+        uses: ./.harness/.github/actions/typescript-mastra
+      - if: inputs.suite == 'rust-spotify-player'
+        uses: ./.harness/.github/actions/rust-spotify-player
+      # Needs the harness for the action itself; without it the job left no timings, and the summary
+      # counts it as a failed replica.
+      - name: Bench finish
+        if: always() && steps.harness.outcome == 'success'
+        uses: ./.harness/.github/actions/bench-finish
+        with:
+          key: ${{ matrix.label }}-${{ matrix.replica }}
+
+  # Runs even when bench jobs fail or are cancelled, but not when plan rejected the inputs.
+  summary:
+    needs: [plan, bench]
+    if: always() && needs.plan.result == 'success'
+    runs-on: starsling-ubuntu-26.04-2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/summarize
+        with:
+          replicas: ${{ inputs.replicas }}

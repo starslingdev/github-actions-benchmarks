@@ -1,7 +1,7 @@
 # Runner labels outside actionlint's built-in set. The StarSling labels and the ubuntu-26.04-{2,8}
 # larger runners are registered at the org level; ubuntu-26.04 is a real GitHub-hosted label that
 # actionlint 1.7.12 predates (drop it once the pinned actionlint knows it). Keep this list in sync
-# with the labels used across .github/workflows/.
+# with the matrix labels in .github/workflows/bench.yml.
 self-hosted-runner:
   labels:
     - starsling-ubuntu-26.04-2

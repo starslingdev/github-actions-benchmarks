@@ -1,0 +1,78 @@
+name: "Suite: TypeScript build (mastra)"
+description: >-
+  mastra-ai/mastra's checkout, cold install, lint and build. Mirrors the realworld-mastra profile in
+  hpc-sandbox-benchmarks (same pin, same commands, same cold-store rules). Steps named
+  "phase: <name>" are measured, each opened by `mark`; the rest is setup and never timed.
+runs:
+  using: composite
+  steps:
+    - name: Environment
+      shell: bash
+      # pnpm's store is what makes an install cold or warm. pnpm 11 resolves it from PNPM_HOME
+      # first, then <XDG_DATA_HOME>/pnpm/store; images that set PNPM_HOME or carry a store in $HOME
+      # would otherwise turn the cold install into a warm one. Pin every knob into an empty
+      # directory under RUNNER_TEMP. A fresh checkout has no turbo cache, but TURBO_FORCE never lets
+      # a cache hit stand in for a build.
+      run: |
+        root="$RUNNER_TEMP/cold"
+        mkdir -p "$root/pnpm-home" "$root/xdg-data" "$root/xdg-cache" "$root/corepack"
+        {
+          echo "CI=true"
+          echo "COREPACK_ENABLE_DOWNLOAD_PROMPT=0"
+          echo "DO_NOT_TRACK=1"
+          echo "TURBO_TELEMETRY_DISABLED=1"
+          echo "TURBO_FORCE=true"
+          echo "PNPM_HOME=$root/pnpm-home"
+          echo "XDG_DATA_HOME=$root/xdg-data"
+          echo "XDG_CACHE_HOME=$root/xdg-cache"
+          echo "COREPACK_HOME=$root/corepack"
+        } >> "$GITHUB_ENV"
+    - shell: bash
+      run: mark checkout
+    - name: "phase: checkout"
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: mastra-ai/mastra
+        ref: b6eeb9d08ebeaf27bc6fd16b6b88087040aaf767
+        path: work
+        persist-credentials: false
+    - shell: bash
+      run: mark -
+    - name: Setup Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "22"
+    - name: Setup pnpm
+      shell: bash
+      working-directory: work
+      # corepack fetches the pnpm that mastra's packageManager field pins (sha512-verified) here, so
+      # the download never lands inside the cold install.
+      run: |
+        corepack enable
+        corepack install
+        pnpm --version
+        # Refuse to time a warm install: the store must not exist yet.
+        store="$(pnpm store path)"
+        if [ -e "$store" ]; then
+          echo "::error::pnpm store already exists at $store; the install would not be cold"
+          exit 1
+        fi
+    - shell: bash
+      run: mark "cold install"
+    - name: "phase: cold install"
+      shell: bash
+      working-directory: work
+      run: pnpm install --frozen-lockfile
+    - shell: bash
+      run: mark lint
+    - name: "phase: lint"
+      shell: bash
+      working-directory: work
+      run: pnpm lint:format
+    - shell: bash
+      run: mark build
+    - name: "phase: build"
+      shell: bash
+      working-directory: work
+      # Scoped to packages/core (and its workspace deps), as in the realworld-mastra profile.
+      run: pnpm build:core

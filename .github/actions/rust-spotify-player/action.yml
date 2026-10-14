@@ -1,0 +1,63 @@
+name: "Suite: Rust build (spotify-player)"
+description: >-
+  aome510/spotify-player's CI, after runs-on-demo/benchmark-public's rust suite. Steps named
+  "phase: <name>" are measured, each opened by `mark`.
+runs:
+  using: composite
+  steps:
+    - name: Environment
+      shell: bash
+      run: |
+        {
+          echo "CARGO_TERM_COLOR=always"
+          echo "RUST_FEATURES=rodio-backend,media-control,image,notify,fzf"
+        } >> "$GITHUB_ENV"
+    - shell: bash
+      run: mark checkout
+    - name: "phase: checkout"
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: aome510/spotify-player
+        ref: 7dc9d17a7bf5671eb6129fdf9127729f659637fc
+        path: work
+        persist-credentials: false
+    - shell: bash
+      run: mark "system packages"
+    - name: "phase: system packages"
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          build-essential pkg-config libssl-dev libasound2-dev libdbus-1-dev \
+          libxcb-shape0-dev libxcb-xfixes0-dev
+    - shell: bash
+      run: mark toolchain
+    - name: "phase: toolchain"
+      uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-09
+      with:
+        toolchain: 1.98.1
+        components: clippy, rustfmt
+    - shell: bash
+      run: mark "cargo fmt"
+    - name: "phase: cargo fmt"
+      shell: bash
+      working-directory: work
+      run: cargo fmt --all -- --check
+    - shell: bash
+      run: mark "cargo test"
+    - name: "phase: cargo test"
+      shell: bash
+      working-directory: work
+      run: cargo test --no-default-features --features "$RUST_FEATURES"
+    - shell: bash
+      run: mark "cargo clippy"
+    - name: "phase: cargo clippy"
+      shell: bash
+      working-directory: work
+      run: cargo clippy --no-default-features --features "$RUST_FEATURES" -- -D warnings
+    - shell: bash
+      run: mark "cargo clippy (no features)"
+    - name: "phase: cargo clippy (no features)"
+      shell: bash
+      working-directory: work
+      run: cargo clippy --no-default-features -- -D warnings

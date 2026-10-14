@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Record a phase boundary for the summary: `mark <phase>` starts a timed phase, `mark -` ends the
 # running one without starting another (untimed setup follows). bench-finish records the last
-# boundary. Wall time in µs from bash's EPOCHREALTIME: `date +%s%3N` is not portable (Ubuntu
-# 26.04's uutils date ignores the width and prints nanoseconds).
+# boundary, and bench.yml puts this directory on PATH. Wall time in µs from bash's EPOCHREALTIME:
+# `date +%s%3N` is not portable (Ubuntu 26.04's uutils date ignores the width and prints
+# nanoseconds).
 # Usage: mark <phase>|-
 set -euo pipefail
 mkdir -p "$RUNNER_TEMP/bench"

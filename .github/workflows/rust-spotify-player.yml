@@ -1,9 +1,7 @@
 name: Rust build (spotify-player)
 
-# aome510/spotify-player's CI, after runs-on-demo/benchmark-public's rust suite, on StarSling and
-# GitHub-hosted runners. Steps named "phase: <name>" are the measured ones, each opened by a
-# `bin/mark` step (GitHub's API does not expose step timings); everything else is setup and never
-# timed.
+# aome510/spotify-player's CI (fmt, test, clippy) on every runner in bench.yml's matrix. The phases
+# live in .github/actions/rust-spotify-player; the shared pipeline is .github/workflows/bench.yml.
 
 on:
   workflow_dispatch:
@@ -21,109 +19,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    runs-on: starsling-ubuntu-26.04-2
-    outputs:
-      replicas: ${{ steps.replicas.outputs.list }}
-    steps:
-      # Expressions have no range(): turn the count into the [1..N] list the matrix fans out over.
-      # 40 keeps 6 runners x N under GitHub's 256-job matrix limit.
-      - id: replicas
-        env:
-          REPLICAS: ${{ inputs.replicas }}
-        run: |
-          if ! [[ "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 40 )); then
-            echo "::error::replicas must be 1-40, got '$REPLICAS'"
-            exit 1
-          fi
-          echo "list=[$(seq 1 "$REPLICAS" | paste -sd, -)]" >> "$GITHUB_OUTPUT"
-
   bench:
-    needs: plan
-    name: ${{ matrix.vcpu }} vCPU · ${{ matrix.label }} · ${{ matrix.replica }}
-    strategy:
-      fail-fast: false
-      matrix:
-        vcpu: [2, 4, 8]
-        provider: [starsling, github]
-        replica: ${{ fromJSON(needs.plan.outputs.replicas) }}
-        include:
-          - { vcpu: 2, provider: starsling, label: starsling-ubuntu-26.04-2 }
-          - { vcpu: 2, provider: github, label: ubuntu-26.04-2 }
-          - { vcpu: 4, provider: starsling, label: starsling-ubuntu-26.04 }
-          # GitHub's standard runner, 4 vCPU in public repositories (2 and 8 are the org's larger
-          # runners).
-          - { vcpu: 4, provider: github, label: ubuntu-26.04 }
-          - { vcpu: 8, provider: starsling, label: starsling-ubuntu-26.04-8 }
-          - { vcpu: 8, provider: github, label: ubuntu-26.04-8 }
-    runs-on: ${{ matrix.label }}
-    timeout-minutes: 45
-    env:
-      SPOTIFY_PLAYER_REPOSITORY: aome510/spotify-player
-      SPOTIFY_PLAYER_COMMIT: 7dc9d17a7bf5671eb6129fdf9127729f659637fc
-      CARGO_TERM_COLOR: always
-      RUST_FEATURES: "rodio-backend,media-control,image,notify,fzf"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: .harness
-          persist-credentials: false
-      - name: Host info
-        uses: ./.harness/.github/actions/host-info
-        with:
-          label: ${{ matrix.label }}
-          vcpu: ${{ matrix.vcpu }}
-      - run: .harness/bin/mark "checkout"
-      - name: "phase: checkout"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ env.SPOTIFY_PLAYER_REPOSITORY }}
-          ref: ${{ env.SPOTIFY_PLAYER_COMMIT }}
-          path: work
-          persist-credentials: false
-      - run: .harness/bin/mark "system packages"
-      - name: "phase: system packages"
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            build-essential pkg-config libssl-dev libasound2-dev libdbus-1-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev
-      - run: .harness/bin/mark "toolchain"
-      - name: "phase: toolchain"
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-09
-        with:
-          toolchain: 1.98.1
-          components: clippy, rustfmt
-      - run: .harness/bin/mark "cargo fmt"
-      - name: "phase: cargo fmt"
-        working-directory: work
-        run: cargo fmt --all -- --check
-      - run: .harness/bin/mark "cargo test"
-      - name: "phase: cargo test"
-        working-directory: work
-        run: cargo test --no-default-features --features "$RUST_FEATURES"
-      - run: .harness/bin/mark "cargo clippy"
-      - name: "phase: cargo clippy"
-        working-directory: work
-        run: cargo clippy --no-default-features --features "$RUST_FEATURES" -- -D warnings
-      - run: .harness/bin/mark "cargo clippy (no features)"
-      - name: "phase: cargo clippy (no features)"
-        working-directory: work
-        run: cargo clippy --no-default-features -- -D warnings
-      - name: Bench finish
-        if: always()
-        uses: ./.harness/.github/actions/bench-finish
-        with:
-          key: ${{ matrix.label }}-${{ matrix.replica }}
-
-  summary:
-    needs: bench
-    if: always()
-    runs-on: starsling-ubuntu-26.04-2
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/summarize
+    uses: ./.github/workflows/bench.yml
+    with:
+      suite: rust-spotify-player
+      # workflow_dispatch hands number inputs over as strings; bench.yml takes a number.
+      replicas: ${{ fromJSON(inputs.replicas) }}

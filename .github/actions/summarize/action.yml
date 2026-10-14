@@ -1,5 +1,9 @@
 name: Summarize
 description: Tabulate every bench job's phase timings into the run summary and a results artifact.
+inputs:
+  replicas:
+    description: Jobs each runner was asked to run (the denominator of the ok column)
+    required: true
 runs:
   using: composite
   steps:
@@ -11,12 +15,17 @@ runs:
     # lines, then bench-finish's `end <µs> <job status>`). A phase runs to the next boundary. The
     # table has one row per runner label, with p50 / p90 over that label's successful replicas.
     - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        REPLICAS: ${{ inputs.replicas }}
       with:
         script: |
           const fs = require("node:fs");
           const dir = `${process.env.RUNNER_TEMP}/bench`;
           const read = (job, file) => fs.readFileSync(`${dir}/${job}/${file}`, "utf8");
-          const jobs = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((job) => {
+          // A job whose host-info step failed left no host.json; it only counts against its runner's ok
+          // column, through the replicas denominator.
+          const artifacts = fs.existsSync(dir) ? fs.readdirSync(dir).filter((job) => fs.existsSync(`${dir}/${job}/host.json`)) : [];
+          const jobs = artifacts.map((job) => {
             const rows = read(job, "phases.tsv").trim().split("\n").map((line) => line.split("\t"));
             const phases = rows.slice(0, -1).flatMap(([name, start], i) => (name === "-" ? [] : [{ name, seconds: (rows[i + 1][1] - start) / 1e6 }]));
             const totalSeconds = phases.reduce((sum, phase) => sum + phase.seconds, 0);
@@ -41,14 +50,14 @@ runs:
           cells.sort((a, b) => a.advertisedVcpu - b.advertisedVcpu || a.p50 - b.p50);
           await core.summary
             .addHeading(context.workflow)
-            .addRaw("p50 / p90 seconds over each runner's successful replicas.", true)
+            .addRaw("p50 / p90 seconds over each runner's successful replicas; ok is successful / requested replicas.", true)
             .addTable([
               ["vCPU", "runner", "RAM GiB", "ok", ...names, "total"].map((data) => ({ data, header: true })),
               ...cells.map((cell) => [
                 `${cell.vcpu}`,
                 cell.label,
                 `${cell.memoryGiB}`,
-                `${cell.ok.length}/${cell.runs.length}`,
+                `${cell.ok.length}/${process.env.REPLICAS}`,
                 ...names.map((name) => stat(cell.ok.flatMap((job) => job.phases.filter((phase) => phase.name === name).map((phase) => phase.seconds)))),
                 stat(cell.ok.map((job) => job.totalSeconds)),
               ]),
